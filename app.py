@@ -1,11 +1,21 @@
 import json
 import streamlit as st
-from openai import OpenAI
 
 st.set_page_config(page_title="릴스 자막 자동 생성기", layout="wide")
 
 st.title("🎬 릴스 자막 자동 생성기")
-st.markdown("AI를 활용해 **컷별 자막 초안**을 생성하고, **컷별 수정/재생성**까지 할 수 있습니다.")
+st.markdown(
+    """
+AI API 없이 사용하는 버전입니다.
+
+**사용 방법**
+1. 아래 정보를 입력합니다.
+2. **전체 생성 프롬프트 만들기** 버튼을 눌러 프롬프트를 생성합니다.
+3. 생성된 프롬프트를 ChatGPT 웹에 붙여넣습니다.
+4. ChatGPT가 반환한 JSON 결과를 앱에 다시 붙여넣습니다.
+5. 앱에서 컷별 수정 / 특정 컷 재생성용 프롬프트 생성까지 할 수 있습니다.
+"""
+)
 
 # ---------------------------
 # Session State
@@ -13,22 +23,14 @@ st.markdown("AI를 활용해 **컷별 자막 초안**을 생성하고, **컷별 
 if "result_data" not in st.session_state:
     st.session_state.result_data = None
 
-if "last_input_payload" not in st.session_state:
-    st.session_state.last_input_payload = None
+if "generated_prompt" not in st.session_state:
+    st.session_state.generated_prompt = ""
 
-# ---------------------------
-# Sidebar
-# ---------------------------
-with st.sidebar:
-    st.header("🔑 설정")
-    api_key = st.text_input("OpenAI API Key", type="password")
-    model_name = st.selectbox(
-        "모델 선택",
-        ["gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1"],
-        index=0
-    )
+if "parsed_json_text" not in st.session_state:
+    st.session_state.parsed_json_text = ""
 
-client = OpenAI(api_key=api_key) if api_key else None
+if "cut_regen_prompt" not in st.session_state:
+    st.session_state.cut_regen_prompt = ""
 
 # ---------------------------
 # Input Area
@@ -45,7 +47,8 @@ with col1:
 with col2:
     promo_points = st.text_area(
         "홍보 포인트 (할인/이벤트/주력상품 등)",
-        placeholder="예: 현장 등록 할인, 선착순 굿즈 증정, 인기 강의 체험존 운영"
+        placeholder="예: 현장 등록 할인, 선착순 굿즈 증정, 인기 강의 체험존 운영",
+        height=140
     )
 
 st.subheader("🎨 스타일 설정")
@@ -60,7 +63,8 @@ with col_a:
     if not no_must_include:
         must_include = st.text_area(
             "반드시 포함할 문구",
-            placeholder="예: 지금 신청하면 혜택 제공 / 현장 한정 이벤트"
+            placeholder="예: 지금 신청하면 혜택 제공 / 현장 한정 이벤트",
+            height=100
         )
 
 with col_b:
@@ -69,13 +73,15 @@ with col_b:
     if not no_avoid_words:
         avoid_words = st.text_area(
             "피해야 할 표현",
-            placeholder="예: 과장된 표현, 지나치게 자극적인 문구"
+            placeholder="예: 과장된 표현, 지나치게 자극적인 문구",
+            height=100
         )
 
 st.subheader("📚 레퍼런스 (선택)")
 reference = st.text_area(
     "기존 자막 레퍼런스 입력 (Few-shot용)",
-    placeholder="기존 릴스 자막 예시를 붙여넣어 주세요."
+    placeholder="기존 릴스 자막 예시를 붙여넣어 주세요.",
+    height=180
 )
 
 # ---------------------------
@@ -94,7 +100,7 @@ def get_input_payload():
     }
 
 
-def validate_input(payload: dict) -> list[str]:
+def validate_input(payload: dict) -> list:
     errors = []
     if not payload["event_name"]:
         errors.append("행사명을 입력해주세요.")
@@ -155,7 +161,7 @@ def build_full_prompt(payload: dict) -> str:
 """.strip()
 
 
-def build_regenerate_cut_prompt(payload: dict, current_data: list[dict], target_cut: int) -> str:
+def build_regenerate_cut_prompt(payload: dict, current_data: list, target_cut: int, extra_instruction: str) -> str:
     must_include_text = (
         "없음" if payload["must_include"] is None or payload["must_include"] == ""
         else payload["must_include"]
@@ -166,6 +172,7 @@ def build_regenerate_cut_prompt(payload: dict, current_data: list[dict], target_
     )
 
     current_json = json.dumps(current_data, ensure_ascii=False, indent=2)
+    extra_instruction_text = extra_instruction.strip() if extra_instruction.strip() else "없음"
 
     return f"""
 너는 SNS 마케팅 전문가이자 숏폼 콘텐츠 카피라이터다.
@@ -184,6 +191,9 @@ def build_regenerate_cut_prompt(payload: dict, current_data: list[dict], target_
 - 톤앤매너: {payload["tone"]}
 - 반드시 포함할 문구: {must_include_text}
 - 피해야 할 표현: {avoid_words_text}
+
+[추가 수정 지시]
+{extra_instruction_text}
 
 [현재 전체 구성]
 {current_json}
@@ -204,61 +214,7 @@ def build_regenerate_cut_prompt(payload: dict, current_data: list[dict], target_
 """.strip()
 
 
-def call_llm_json_array(prompt: str) -> list[dict]:
-    response = client.chat.completions.create(
-        model=model_name,
-        messages=[
-            {"role": "system", "content": "너는 콘텐츠 마케팅 전문가다. JSON만 정확하게 출력한다."},
-            {"role": "user", "content": prompt},
-        ],
-        temperature=0.7,
-    )
-
-    content = response.choices[0].message.content.strip()
-
-    try:
-        data = json.loads(content)
-        if not isinstance(data, list):
-            raise ValueError("응답이 JSON 배열이 아닙니다.")
-        return data
-    except Exception:
-        start = content.find("[")
-        end = content.rfind("]")
-        if start != -1 and end != -1 and start < end:
-            data = json.loads(content[start:end + 1])
-            if isinstance(data, list):
-                return data
-        raise ValueError("모델 응답을 JSON 배열로 파싱하지 못했습니다.")
-
-
-def call_llm_json_object(prompt: str) -> dict:
-    response = client.chat.completions.create(
-        model=model_name,
-        messages=[
-            {"role": "system", "content": "너는 콘텐츠 마케팅 전문가다. JSON만 정확하게 출력한다."},
-            {"role": "user", "content": prompt},
-        ],
-        temperature=0.8,
-    )
-
-    content = response.choices[0].message.content.strip()
-
-    try:
-        data = json.loads(content)
-        if not isinstance(data, dict):
-            raise ValueError("응답이 JSON 객체가 아닙니다.")
-        return data
-    except Exception:
-        start = content.find("{")
-        end = content.rfind("}")
-        if start != -1 and end != -1 and start < end:
-            data = json.loads(content[start:end + 1])
-            if isinstance(data, dict):
-                return data
-        raise ValueError("모델 응답을 JSON 객체로 파싱하지 못했습니다.")
-
-
-def normalize_result_data(data: list[dict]) -> list[dict]:
+def normalize_result_data(data: list) -> list:
     normalized = []
     for idx, item in enumerate(data, start=1):
         normalized.append(
@@ -271,53 +227,123 @@ def normalize_result_data(data: list[dict]) -> list[dict]:
     return normalized
 
 
+def extract_json_array(text: str):
+    text = text.strip()
+    try:
+        data = json.loads(text)
+        if isinstance(data, list):
+            return data
+    except Exception:
+        pass
+
+    start = text.find("[")
+    end = text.rfind("]")
+    if start != -1 and end != -1 and start < end:
+        candidate = text[start:end + 1]
+        data = json.loads(candidate)
+        if isinstance(data, list):
+            return data
+
+    raise ValueError("JSON 배열을 찾지 못했습니다.")
+
+
+def extract_json_object(text: str):
+    text = text.strip()
+    try:
+        data = json.loads(text)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and start < end:
+        candidate = text[start:end + 1]
+        data = json.loads(candidate)
+        if isinstance(data, dict):
+            return data
+
+    raise ValueError("JSON 객체를 찾지 못했습니다.")
+
+
 # ---------------------------
-# Action Buttons
+# Full Prompt Generation
 # ---------------------------
-top_btn_col1, top_btn_col2 = st.columns([1, 1])
+st.divider()
+st.subheader("🪄 1) ChatGPT에 넣을 전체 생성 프롬프트 만들기")
 
-with top_btn_col1:
-    generate_clicked = st.button("🚀 처음 생성하기 / 전체 재생성", use_container_width=True)
+payload = get_input_payload()
 
-with top_btn_col2:
-    clear_clicked = st.button("🗑️ 결과 초기화", use_container_width=True)
+btn_col1, btn_col2 = st.columns([1, 1])
 
-if clear_clicked:
-    st.session_state.result_data = None
-    st.session_state.last_input_payload = None
-    st.success("생성 결과를 초기화했습니다.")
-
-if generate_clicked:
-    if not client:
-        st.error("OpenAI API Key를 입력해주세요.")
-    else:
-        payload = get_input_payload()
+with btn_col1:
+    if st.button("📋 전체 생성 프롬프트 만들기", use_container_width=True):
         errors = validate_input(payload)
-
         if errors:
             for err in errors:
                 st.error(err)
         else:
-            with st.spinner("전체 자막을 생성하는 중입니다..."):
-                try:
-                    prompt = build_full_prompt(payload)
-                    data = call_llm_json_array(prompt)
-                    st.session_state.result_data = normalize_result_data(data)
-                    st.session_state.last_input_payload = payload
-                    st.success("전체 자막 초안을 생성했습니다.")
-                except Exception as e:
-                    st.error(f"생성 중 에러가 발생했습니다: {e}")
+            st.session_state.generated_prompt = build_full_prompt(payload)
+            st.success("전체 생성 프롬프트를 만들었습니다.")
+
+with btn_col2:
+    if st.button("🗑️ 결과 초기화", use_container_width=True):
+        st.session_state.result_data = None
+        st.session_state.generated_prompt = ""
+        st.session_state.parsed_json_text = ""
+        st.session_state.cut_regen_prompt = ""
+        st.success("초기화했습니다.")
+
+if st.session_state.generated_prompt:
+    st.text_area(
+        "아래 프롬프트를 ChatGPT 웹에 붙여넣으세요",
+        value=st.session_state.generated_prompt,
+        height=360
+    )
+
+# ---------------------------
+# Paste Result from ChatGPT
+# ---------------------------
+st.divider()
+st.subheader("📥 2) ChatGPT 결과 붙여넣기")
+
+pasted_result = st.text_area(
+    "ChatGPT가 반환한 JSON 결과를 그대로 붙여넣으세요",
+    value=st.session_state.parsed_json_text,
+    height=260,
+    placeholder='예: [{"cut":1,"caption":"...","visual":"..."}]'
+)
+
+parse_col1, parse_col2 = st.columns([1, 1])
+
+with parse_col1:
+    if st.button("✅ 결과 불러오기", use_container_width=True):
+        try:
+            parsed = extract_json_array(pasted_result)
+            st.session_state.result_data = normalize_result_data(parsed)
+            st.session_state.parsed_json_text = pasted_result
+            st.success("결과를 불러왔습니다.")
+        except Exception as e:
+            st.error(f"결과 파싱 중 오류가 발생했습니다: {e}")
+
+with parse_col2:
+    if st.button("📄 샘플 JSON 넣기", use_container_width=True):
+        sample = [
+            {"cut": 1, "caption": "놓치면 아쉬운 이번 행사", "visual": "행사 전경이 빠르게 등장"},
+            {"cut": 2, "caption": "현장 한정 혜택까지 준비됐어요", "visual": "혜택 안내 보드 클로즈업"},
+            {"cut": 3, "caption": "지금 바로 확인해보세요", "visual": "CTA 텍스트와 함께 마무리"}
+        ]
+        sample_text = json.dumps(sample, ensure_ascii=False, indent=2)
+        st.session_state.parsed_json_text = sample_text
+        st.rerun()
 
 # ---------------------------
 # Result Editor
 # ---------------------------
 if st.session_state.result_data:
     st.divider()
-    st.subheader("📤 생성 결과")
-    st.caption("각 컷의 자막과 화면 설명을 직접 수정하거나, 특정 컷만 다시 생성할 수 있습니다.")
-
-    payload_for_regen = get_input_payload()
-    st.session_state.last_input_payload = payload_for_regen
+    st.subheader("✍️ 3) 컷별 편집")
 
     for idx, item in enumerate(st.session_state.result_data):
         cut_num = item["cut"]
@@ -344,79 +370,82 @@ if st.session_state.result_data:
                 height=100
             )
 
-            # 수동 편집 반영
             st.session_state.result_data[idx]["caption"] = new_caption
             st.session_state.result_data[idx]["visual"] = new_visual
 
-            btn_col1, btn_col2 = st.columns([1, 1])
+            extra_instruction = st.text_input(
+                f"{cut_num}컷 추가 수정 지시사항 (선택)",
+                key=f"extra_instruction_{idx}",
+                placeholder="예: 더 긴박하게 / CTA를 더 강하게 / 더 짧고 강하게"
+            )
 
-            with btn_col1:
-                if st.button(f"🔄 {cut_num}컷만 다시 생성", key=f"regen_cut_{idx}", use_container_width=True):
-                    if not client:
-                        st.error("OpenAI API Key를 입력해주세요.")
-                    else:
-                        with st.spinner(f"{cut_num}컷을 다시 생성하는 중입니다..."):
-                            try:
-                                prompt = build_regenerate_cut_prompt(
-                                    payload_for_regen,
-                                    st.session_state.result_data,
-                                    cut_num
-                                )
-                                regenerated = call_llm_json_object(prompt)
+            if st.button(f"🔄 {cut_num}컷 재생성용 프롬프트 만들기", key=f"regen_prompt_{idx}"):
+                try:
+                    regen_prompt = build_regenerate_cut_prompt(
+                        payload,
+                        st.session_state.result_data,
+                        cut_num,
+                        extra_instruction
+                    )
+                    st.session_state.cut_regen_prompt = regen_prompt
+                    st.success(f"{cut_num}컷 재생성용 프롬프트를 만들었습니다.")
+                except Exception as e:
+                    st.error(f"재생성용 프롬프트 생성 중 오류가 발생했습니다: {e}")
 
-                                st.session_state.result_data[idx]["caption"] = str(
-                                    regenerated.get("caption", "")
-                                ).strip()
-                                st.session_state.result_data[idx]["visual"] = str(
-                                    regenerated.get("visual", "")
-                                ).strip()
+    # ---------------------------
+    # Cut Regeneration Prompt
+    # ---------------------------
+    if st.session_state.cut_regen_prompt:
+        st.divider()
+        st.subheader("🔁 4) 특정 컷 재생성용 프롬프트")
 
-                                st.success(f"{cut_num}컷을 다시 생성했습니다.")
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"{cut_num}컷 재생성 중 에러가 발생했습니다: {e}")
+        st.text_area(
+            "아래 프롬프트를 ChatGPT 웹에 붙여넣어 특정 컷만 다시 생성하세요",
+            value=st.session_state.cut_regen_prompt,
+            height=320
+        )
 
-            with btn_col2:
-                if st.button(f"💾 {cut_num}컷 수정 내용 유지", key=f"save_cut_{idx}", use_container_width=True):
-                    st.success(f"{cut_num}컷 수정 내용을 반영했습니다.")
+        regen_result = st.text_area(
+            "재생성된 특정 컷의 JSON 결과를 여기에 붙여넣으세요",
+            height=180,
+            key="regen_result_text",
+            placeholder='예: {"cut": 3, "caption": "...", "visual": "..."}'
+        )
 
+        if st.button("✅ 특정 컷 결과 반영"):
+            try:
+                obj = extract_json_object(regen_result)
+                target_cut = int(obj["cut"])
+
+                matched = False
+                for i, item in enumerate(st.session_state.result_data):
+                    if int(item["cut"]) == target_cut:
+                        st.session_state.result_data[i]["caption"] = str(obj.get("caption", "")).strip()
+                        st.session_state.result_data[i]["visual"] = str(obj.get("visual", "")).strip()
+                        matched = True
+                        break
+
+                if matched:
+                    st.success(f"{target_cut}컷 결과를 반영했습니다.")
+                    st.rerun()
+                else:
+                    st.error("해당 cut 번호와 일치하는 항목을 찾지 못했습니다.")
+            except Exception as e:
+                st.error(f"특정 컷 결과 반영 중 오류가 발생했습니다: {e}")
+
+    # ---------------------------
+    # Final JSON
+    # ---------------------------
     st.divider()
-
     st.subheader("🧾 최종 JSON 결과")
 
     final_json = json.dumps(st.session_state.result_data, ensure_ascii=False, indent=2)
     st.code(final_json, language="json")
 
-    download_col1, download_col2 = st.columns([1, 1])
-
-    with download_col1:
-        st.download_button(
-            label="📥 JSON 다운로드",
-            data=final_json,
-            file_name="reels_caption.json",
-            mime="application/json",
-            use_container_width=True
-        )
-
-    with download_col2:
-        if st.button("🔁 현재 입력값으로 전체 다시 생성", use_container_width=True):
-            if not client:
-                st.error("OpenAI API Key를 입력해주세요.")
-            else:
-                payload = get_input_payload()
-                errors = validate_input(payload)
-
-                if errors:
-                    for err in errors:
-                        st.error(err)
-                else:
-                    with st.spinner("현재 입력값으로 전체를 다시 생성하는 중입니다..."):
-                        try:
-                            prompt = build_full_prompt(payload)
-                            data = call_llm_json_array(prompt)
-                            st.session_state.result_data = normalize_result_data(data)
-                            st.session_state.last_input_payload = payload
-                            st.success("전체 자막을 다시 생성했습니다.")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"전체 재생성 중 에러가 발생했습니다: {e}")
+    st.download_button(
+        label="📥 JSON 다운로드",
+        data=final_json,
+        file_name="reels_caption.json",
+        mime="application/json",
+        use_container_width=True
+    )
