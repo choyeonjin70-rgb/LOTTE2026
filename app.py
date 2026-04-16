@@ -1,6 +1,3 @@
-from pathlib import Path
-
-app_code = r'''
 import re
 from copy import deepcopy
 from datetime import date
@@ -110,7 +107,7 @@ def fallback_generate_drafts(payload: Dict, target_count: int) -> List[Dict]:
 
         if required and idx < len(required):
             caption = f"{caption} | {required[idx]}"
-        elif required and idx == target_count - 1:
+        elif required and idx == target_count - 1 and required:
             caption = f"{caption} | {' / '.join(required[:2])}"
 
         drafts.append(
@@ -628,15 +625,3 @@ else:
     st.markdown('<div class="saved-empty">저장된 결과가 없습니다.</div>', unsafe_allow_html=True)
 
 st.markdown("</div>", unsafe_allow_html=True)
-'''
-
-requirements = """streamlit>=1.44.0
-"""
-
-base = Path("/mnt/data")
-(base / "app.py").write_text(app_code, encoding="utf-8")
-(base / "requirements.txt").write_text(requirements, encoding="utf-8")
-
-print("Created:", base / "app.py")
-print("Created:", base / "requirements.txt")
-
