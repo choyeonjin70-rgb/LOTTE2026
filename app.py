@@ -1,368 +1,431 @@
+import streamlit as st
+import anthropic
 import json
 import re
 from copy import deepcopy
-from datetime import date
-from typing import Dict, List
 
-import streamlit as st
-
-
+# ── 페이지 설정 ──────────────────────────────────────────────
 st.set_page_config(
     page_title="릴스 자막 초안 생성기",
     page_icon="🎬",
     layout="wide",
+    initial_sidebar_state="collapsed",
 )
 
-STATUS_LABELS = {
-    "idle": "초안 작성 전",
-    "generated": "생성 완료",
-    "editing": "수정 중",
-    "finalized": "확정 완료",
-}
+# ── CSS ──────────────────────────────────────────────────────
+st.markdown("""
+<style>
+    /* 전체 배경 */
+    .stApp { background: #0f0f0f; color: #f0f0f0; }
 
+    /* 헤더 */
+    .header-bar {
+        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+        border-radius: 12px;
+        padding: 20px 28px;
+        margin-bottom: 24px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        border: 1px solid #ffffff15;
+    }
+    .header-title { font-size: 1.4rem; font-weight: 700; color: #fff; margin: 0; }
+    .header-sub { font-size: 0.8rem; color: #aaa; margin-top: 4px; }
 
-def init_state() -> None:
-    if "status" not in st.session_state:
-        st.session_state.status = "idle"
-    if "drafts" not in st.session_state:
-        st.session_state.drafts = []
-    if "saved_versions" not in st.session_state:
-        st.session_state.saved_versions = []
-    if "generation_log" not in st.session_state:
-        st.session_state.generation_log = []
-    if "last_input_payload" not in st.session_state:
-        st.session_state.last_input_payload = {}
-    if "copied_text" not in st.session_state:
-        st.session_state.copied_text = ""
+    /* 상태 배지 */
+    .status-badge {
+        display: inline-block;
+        padding: 5px 14px;
+        border-radius: 20px;
+        font-size: 0.75rem;
+        font-weight: 600;
+    }
+    .status-ready    { background: #2a2a2a; color: #888; border: 1px solid #444; }
+    .status-done     { background: #0d2b1a; color: #4ade80; border: 1px solid #22c55e50; }
+    .status-editing  { background: #1a2040; color: #60a5fa; border: 1px solid #3b82f650; }
+    .status-final    { background: #1a0d2b; color: #c084fc; border: 1px solid #a855f750; }
 
-
-def normalize_points(raw: str) -> List[str]:
-    if not raw.strip():
-        return []
-    parts = re.split(r"[\n,;/]+", raw)
-    return [p.strip() for p in parts if p.strip()]
-
-
-def build_input_payload() -> Dict:
-    return {
-        "행사명": st.session_state.event_name,
-        "행사 기간": st.session_state.event_period,
-        "행사 장소": st.session_state.event_place,
-        "홍보 포인트": normalize_points(st.session_state.promo_points),
-        "주력 상품": normalize_points(st.session_state.main_products),
-        "이벤트/혜택": normalize_points(st.session_state.benefits),
-        "필수 포함 문구": normalize_points(st.session_state.required_lines),
-        "톤앤매너": st.session_state.tone,
-        "스타일": st.session_state.style_template,
-        "영상 길이": st.session_state.video_length,
-        "예상 컷 수": int(st.session_state.cut_count),
+    /* 섹션 레이블 */
+    .section-label {
+        font-size: 0.7rem;
+        font-weight: 700;
+        letter-spacing: 0.1em;
+        color: #888;
+        text-transform: uppercase;
+        margin-bottom: 10px;
     }
 
-
-def fallback_generate_drafts(payload: Dict, target_count: int) -> List[Dict]:
-    event_name = payload["행사명"] or "이번 행사"
-    period = payload["행사 기간"] or "이번 주"
-    place = payload["행사 장소"] or "현장"
-    tone = payload["톤앤매너"]
-    style = payload["스타일"]
-    promo_points = payload["홍보 포인트"] or ["놓치면 아쉬운 혜택"]
-    products = payload["주력 상품"] or ["인기 상품"]
-    benefits = payload["이벤트/혜택"] or ["특별 혜택"]
-    required = payload["필수 포함 문구"]
-
-    candidate_pool = [
-        {
-            "caption": f"{period}, {event_name} 꼭 체크하세요",
-            "description": f"{place} 전경과 행사 타이틀을 보여주는 오프닝 컷",
-        },
-        {
-            "caption": f"{products[0]} 중심으로 지금 가장 반응 좋은 포인트만 담았어요",
-            "description": f"{products[0]} 클로즈업과 핵심 특징을 빠르게 보여주는 컷",
-        },
-        {
-            "caption": f"{benefits[0]} 혜택으로 체감되는 매력을 강조해보세요",
-            "description": "혜택 문구와 가격/혜택 강조 그래픽이 함께 나오는 컷",
-        },
-        {
-            "caption": f"{promo_points[0]} 포인트를 한눈에 전달하는 핵심 설명 컷",
-            "description": "현장 분위기 또는 사용 장면을 보여주는 설명 컷",
-        },
-        {
-            "caption": "지금 바로 확인하고 원하는 혜택을 챙겨보세요",
-            "description": "CTA 중심 마무리 컷",
-        },
-    ]
-
-    tone_map = {
-        "밝고 경쾌함": "리듬감 있게",
-        "신뢰감/정보형": "명확하고 또렷하게",
-        "세일즈/강조형": "임팩트 있게",
-        "트렌디/숏폼형": "짧고 감각적으로",
+    /* 컷 카드 */
+    .cut-card {
+        background: #1a1a1a;
+        border: 1px solid #2a2a2a;
+        border-radius: 12px;
+        padding: 16px 18px;
+        margin-bottom: 14px;
+        transition: border-color 0.2s;
     }
-    tone_prefix = tone_map.get(tone, "자연스럽게")
-
-    drafts: List[Dict] = []
-    for idx in range(target_count):
-        base = candidate_pool[idx % len(candidate_pool)]
-        caption = f"{tone_prefix} {base['caption']}"
-        description = f"{style} 스타일로 {base['description']}"
-
-        if required and idx < len(required):
-            caption = f"{caption} | {required[idx]}"
-        elif required and idx == target_count - 1:
-            caption = f"{caption} | {' / '.join(required[:2])}"
-
-        drafts.append(
-            {
-                "id": idx + 1,
-                "caption": caption,
-                "description": description,
-            }
-        )
-    return drafts
-
-
-def regenerate_single_cut(index: int) -> None:
-    payload = st.session_state.last_input_payload or build_input_payload()
-    regenerated = fallback_generate_drafts(payload, len(st.session_state.drafts))
-    st.session_state.drafts[index]["caption"] = regenerated[index]["caption"]
-    st.session_state.drafts[index]["description"] = regenerated[index]["description"]
-    st.session_state.status = "editing"
-
-
-def move_cut(index: int, direction: int) -> None:
-    new_index = index + direction
-    if 0 <= new_index < len(st.session_state.drafts):
-        st.session_state.drafts[index], st.session_state.drafts[new_index] = (
-            st.session_state.drafts[new_index],
-            st.session_state.drafts[index],
-        )
-        for i, draft in enumerate(st.session_state.drafts, start=1):
-            draft["id"] = i
-        st.session_state.status = "editing"
-
-
-def add_cut(after_index: int) -> None:
-    new_cut = {
-        "id": after_index + 2,
-        "caption": "새 컷 자막을 입력하세요",
-        "description": "새 컷 설명을 입력하세요",
+    .cut-card:hover { border-color: #3b82f6; }
+    .cut-num {
+        font-size: 0.68rem;
+        font-weight: 700;
+        color: #3b82f6;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        margin-bottom: 6px;
     }
-    st.session_state.drafts.insert(after_index + 1, new_cut)
-    for i, draft in enumerate(st.session_state.drafts, start=1):
-        draft["id"] = i
-    st.session_state.status = "editing"
-
-
-def remove_cut(index: int) -> None:
-    if len(st.session_state.drafts) <= 1:
-        st.warning("최소 1개 컷은 유지되어야 합니다.")
-        return
-    st.session_state.drafts.pop(index)
-    for i, draft in enumerate(st.session_state.drafts, start=1):
-        draft["id"] = i
-    st.session_state.status = "editing"
-
-
-def export_text(drafts: List[Dict]) -> str:
-    lines = []
-    for item in drafts:
-        lines.append(f"[컷 {item['id']}]")
-        lines.append(f"자막: {item['caption']}")
-        lines.append(f"컷 설명: {item['description']}")
-        lines.append("")
-    return "\n".join(lines).strip()
-
-
-def save_current_version() -> None:
-    version = {
-        "saved_at": str(date.today()),
-        "status": st.session_state.status,
-        "payload": deepcopy(st.session_state.last_input_payload),
-        "drafts": deepcopy(st.session_state.drafts),
+    .cut-caption {
+        font-size: 1.05rem;
+        font-weight: 600;
+        color: #f0f0f0;
+        margin-bottom: 8px;
+        line-height: 1.4;
     }
-    st.session_state.saved_versions.append(version)
+    .cut-desc {
+        font-size: 0.8rem;
+        color: #888;
+        background: #111;
+        border-radius: 6px;
+        padding: 6px 10px;
+    }
 
+    /* 입력 패널 카드 */
+    .panel-card {
+        background: #141414;
+        border: 1px solid #232323;
+        border-radius: 12px;
+        padding: 20px;
+        margin-bottom: 16px;
+    }
 
-def run_generation() -> None:
-    payload = build_input_payload()
-    st.session_state.last_input_payload = payload
-    st.session_state.generation_log = ["행사 포인트 정리 중...", "자막 흐름 구성 중..."]
+    /* 액션 버튼 공통 */
+    .stButton > button {
+        border-radius: 8px !important;
+        font-weight: 600 !important;
+        font-size: 0.85rem !important;
+        transition: all 0.2s !important;
+    }
 
-    with st.spinner("AI가 초안을 생성하고 있습니다..."):
-        drafts = fallback_generate_drafts(payload, payload["예상 컷 수"])
+    /* 구분선 */
+    hr { border-color: #222 !important; }
 
-    st.session_state.drafts = drafts
-    st.session_state.status = "generated"
-    st.session_state.copied_text = export_text(drafts)
+    /* selectbox, text_input, text_area 다크 */
+    .stTextInput > div > div > input,
+    .stTextArea > div > div > textarea,
+    .stSelectbox > div > div { background: #1e1e1e !important; color: #f0f0f0 !important; }
 
+    /* 진행 메시지 */
+    .progress-msg {
+        background: #0d1b2a;
+        border: 1px solid #1e3a5f;
+        border-radius: 8px;
+        padding: 14px 18px;
+        color: #60a5fa;
+        font-size: 0.9rem;
+        margin: 12px 0;
+    }
+    .empty-state {
+        text-align: center;
+        padding: 60px 20px;
+        color: #444;
+    }
+    .empty-icon { font-size: 3rem; margin-bottom: 12px; }
+    .empty-text { font-size: 0.9rem; }
+</style>
+""", unsafe_allow_html=True)
+
+# ── 세션 상태 초기화 ─────────────────────────────────────────
+def init_state():
+    defaults = {
+        "cuts": [],           # [{caption, desc, confirmed}]
+        "status": "ready",    # ready | done | editing | final
+        "history": [],        # 버전 히스토리
+        "regen_idx": None,
+    }
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
 
 init_state()
 
-st.title("🎬 릴스 자막 초안 생성기")
-status_col, info_col = st.columns([1, 3])
-with status_col:
-    st.metric("현재 상태", STATUS_LABELS[st.session_state.status])
-with info_col:
-    st.caption("입력 → 생성 → 검수/수정 → 확정 흐름에 맞춘 내부 업무용 초안 생성 화면")
+# ── 상태 배지 ────────────────────────────────────────────────
+STATUS_LABEL = {
+    "ready":   ("초안 작성 전", "status-ready"),
+    "done":    ("생성 완료",    "status-done"),
+    "editing": ("수정 중",      "status-editing"),
+    "final":   ("확정 완료",    "status-final"),
+}
 
-left, right = st.columns([1, 1.25], gap="large")
+# ── 헤더 ─────────────────────────────────────────────────────
+label, cls = STATUS_LABEL[st.session_state.status]
+st.markdown(f"""
+<div class="header-bar">
+  <div>
+    <div class="header-title">🎬 릴스 자막 초안 생성기</div>
+    <div class="header-sub">입력 → 생성 → 검수 → 확정</div>
+  </div>
+  <span class="status-badge {cls}">{label}</span>
+</div>
+""", unsafe_allow_html=True)
 
+# ── AI 생성 함수 ──────────────────────────────────────────────
+def build_prompt(info: dict, cut_count: int) -> str:
+    return f"""당신은 숏폼 영상(릴스/쇼츠) 자막 전문 카피라이터입니다.
+아래 행사 정보를 바탕으로 정확히 {cut_count}개의 컷 자막과 컷 설명을 작성하세요.
+
+[행사 정보]
+- 행사명: {info['event_name']}
+- 기간: {info['period']}
+- 장소: {info['place']}
+- 홍보 포인트: {info['points']}
+- 주력 상품: {info['products']}
+- 이벤트/혜택: {info['benefits']}
+- 필수 포함 문구: {info['must_include']}
+- 톤앤매너: {info['tone']}
+- 영상 길이: {info['duration']}초
+
+[규칙]
+1. 자막은 짧고 강렬하게 (최대 20자)
+2. 첫 컷은 시선을 끄는 후킹 문장
+3. 마지막 컷은 CTA (행동 유도)
+4. 중간 컷은 혜택·상품 소개 순서로
+5. 컷 설명은 촬영 가이드 (어떤 장면인지)
+6. 반드시 필수 포함 문구를 어느 컷에 넣을 것
+
+반드시 아래 JSON 형식만 출력하세요. 다른 텍스트 없이:
+{{
+  "cuts": [
+    {{"caption": "자막 텍스트", "desc": "컷 설명"}},
+    ...
+  ]
+}}"""
+
+def call_ai(prompt: str) -> list[dict]:
+    client = anthropic.Anthropic()
+    msg = client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=1500,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    raw = msg.content[0].text.strip()
+    # JSON 파싱
+    match = re.search(r'\{.*\}', raw, re.DOTALL)
+    if match:
+        data = json.loads(match.group())
+        return [{"caption": c["caption"], "desc": c["desc"], "confirmed": False}
+                for c in data["cuts"]]
+    raise ValueError("JSON 파싱 실패: " + raw[:200])
+
+def call_ai_single(caption: str, desc: str, info: dict) -> dict:
+    """단일 컷 재생성"""
+    client = anthropic.Anthropic()
+    prompt = f"""릴스 자막 1개를 재작성하세요.
+
+행사: {info['event_name']} / 톤: {info['tone']}
+기존 자막: {caption}
+기존 설명: {desc}
+
+더 임팩트 있게 바꿔주세요. 반드시 아래 JSON만 출력:
+{{"caption": "새 자막", "desc": "새 컷 설명"}}"""
+    msg = client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=200,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    raw = msg.content[0].text.strip()
+    match = re.search(r'\{.*\}', raw, re.DOTALL)
+    if match:
+        return json.loads(match.group())
+    return {"caption": caption, "desc": desc}
+
+# ── 레이아웃 ─────────────────────────────────────────────────
+left, right = st.columns([1, 1.4], gap="large")
+
+# ═══════════════════════════════════════════════════════════════
+# 좌측: 입력 패널
+# ═══════════════════════════════════════════════════════════════
 with left:
-    st.subheader("입력 영역")
-    st.text_input("행사명", key="event_name", placeholder="예: 여름 바캉스 특가전")
-    st.text_input("행사 기간", key="event_period", placeholder="예: 2026.07.10 - 2026.07.14")
-    st.text_input("행사 장소", key="event_place", placeholder="예: 스타필드 코엑스점")
-    st.text_area(
-        "홍보 포인트",
-        key="promo_points",
-        placeholder="쉼표, 줄바꿈으로 여러 개 입력\n예: 여름 한정 특가, 인기 브랜드 참여, 현장 체험존 운영",
-        height=100,
-    )
-    st.text_area(
-        "주력 상품",
-        key="main_products",
-        placeholder="예: 냉감 의류, 여행용 캐리어, 선케어 세트",
-        height=80,
-    )
-    st.text_area(
-        "이벤트/혜택",
-        key="benefits",
-        placeholder="예: 최대 30% 할인, 사은품 증정, 1+1",
-        height=80,
-    )
-    st.text_area(
-        "필수 포함 문구",
-        key="required_lines",
-        placeholder="예: 한정 수량 / 조기 품절 가능",
-        height=80,
-    )
-    st.radio(
-        "톤앤매너 선택",
-        ["밝고 경쾌함", "신뢰감/정보형", "세일즈/강조형", "트렌디/숏폼형"],
+    st.markdown('<div class="section-label">📋 행사 정보 입력</div>', unsafe_allow_html=True)
+
+    with st.container():
+        event_name = st.text_input("행사명 *", placeholder="예: 2025 봄 페스티벌 세일")
+        col1, col2 = st.columns(2)
+        with col1:
+            period = st.text_input("행사 기간 *", placeholder="예: 4/18~4/20")
+        with col2:
+            place = st.text_input("행사 장소", placeholder="예: 강남 본점")
+
+        points = st.text_area(
+            "홍보 포인트 *",
+            placeholder="예: 역대 최대 할인, 봄 신상품 출시, 한정 수량",
+            height=80,
+        )
+        products = st.text_input("주력 상품", placeholder="예: 봄 재킷, 린넨 셔츠")
+        benefits = st.text_area(
+            "이벤트 / 혜택",
+            placeholder="예: 3만원 이상 구매 시 5천원 쿠폰, 선착순 100명 사은품",
+            height=70,
+        )
+        must_include = st.text_input(
+            "필수 포함 문구",
+            placeholder="예: 지금 바로 확인하세요!",
+        )
+
+    st.markdown("---")
+    st.markdown('<div class="section-label">⚙️ 생성 옵션</div>', unsafe_allow_html=True)
+
+    tone = st.radio(
+        "톤앤매너",
+        ["트렌디·캐주얼", "신뢰·정보형", "감성·스토리", "유머·B급"],
         horizontal=True,
-        key="tone",
     )
-    st.selectbox(
-        "스타일 템플릿",
-        ["기본형", "혜택 강조형", "정보 전달형", "숏폼 몰입형"],
-        key="style_template",
-    )
-    c1, c2 = st.columns(2)
-    with c1:
-        st.selectbox("영상 길이", ["15초", "20초", "30초", "45초"], key="video_length")
-    with c2:
-        st.number_input("예상 컷 수", min_value=3, max_value=10, value=5, step=1, key="cut_count")
+    col3, col4 = st.columns(2)
+    with col3:
+        duration = st.selectbox("영상 길이", ["15초", "30초", "60초"])
+    with col4:
+        cut_count = st.selectbox("예상 컷 수", [5, 6, 7, 8, 9, 10], index=1)
 
-    action1, action2 = st.columns(2)
-    with action1:
-        if st.button("초안 생성", use_container_width=True, type="primary"):
-            run_generation()
-            st.rerun()
-    with action2:
-        if st.button("다시 생성", use_container_width=True):
-            run_generation()
-            st.rerun()
+    st.markdown("---")
 
-    st.divider()
-    st.subheader("생성 로그")
-    if st.session_state.generation_log:
-        for msg in st.session_state.generation_log:
-            st.write(f"- {msg}")
-    else:
-        st.caption("생성 전에는 로그가 표시되지 않습니다.")
+    # ── 액션 버튼 ──
+    b1, b2 = st.columns(2)
+    generate_clicked = b1.button("✨ 초안 생성", use_container_width=True, type="primary")
+    regen_all_clicked = b2.button("🔄 다시 생성", use_container_width=True,
+                                  disabled=len(st.session_state.cuts) == 0)
 
+    info = {
+        "event_name": event_name, "period": period, "place": place,
+        "points": points, "products": products, "benefits": benefits,
+        "must_include": must_include, "tone": tone,
+        "duration": duration.replace("초", ""),
+    }
+
+    # 생성 실행
+    if generate_clicked or regen_all_clicked:
+        if not event_name or not period or not points:
+            st.warning("⚠️ 행사명, 기간, 홍보 포인트는 필수 입력 항목입니다.")
+        else:
+            msgs = ["행사 포인트 정리 중 ✦", "자막 흐름 구성 중 ✦", "컷 순서 최적화 중 ✦"]
+            progress_box = st.empty()
+            try:
+                for m in msgs:
+                    progress_box.markdown(f'<div class="progress-msg">⏳ {m}</div>',
+                                          unsafe_allow_html=True)
+                prompt = build_prompt(info, cut_count)
+                cuts = call_ai(prompt)
+                # 히스토리 저장
+                if st.session_state.cuts:
+                    st.session_state.history.append(deepcopy(st.session_state.cuts))
+                st.session_state.cuts = cuts
+                st.session_state.status = "done"
+                progress_box.empty()
+                st.success("✅ 자막 초안이 생성되었습니다!")
+            except Exception as e:
+                progress_box.empty()
+                st.error(f"❌ 입력 정보를 확인 후 다시 시도해주세요.\n({e})")
+
+    # 전체 복사 / 다운로드
+    if st.session_state.cuts:
+        st.markdown("---")
+        st.markdown('<div class="section-label">📤 내보내기</div>', unsafe_allow_html=True)
+        all_text = "\n\n".join(
+            f"[컷 {i+1}]\n자막: {c['caption']}\n설명: {c['desc']}"
+            for i, c in enumerate(st.session_state.cuts)
+        )
+        ec1, ec2 = st.columns(2)
+        ec1.download_button(
+            "⬇️ 텍스트 다운로드",
+            data=all_text,
+            file_name="reels_captions.txt",
+            mime="text/plain",
+            use_container_width=True,
+        )
+        if ec2.button("📋 전체 복사용 보기", use_container_width=True):
+            st.code(all_text, language=None)
+
+        if st.button("✅ 최종 확정", use_container_width=True, type="primary"):
+            st.session_state.status = "final"
+            st.success("🎉 자막이 최종 확정되었습니다!")
+
+# ═══════════════════════════════════════════════════════════════
+# 우측: 결과 패널
+# ═══════════════════════════════════════════════════════════════
 with right:
-    st.subheader("결과 / 편집 영역")
+    st.markdown('<div class="section-label">🎞️ 컷별 자막 초안</div>', unsafe_allow_html=True)
 
-    if not st.session_state.drafts:
-        st.info("좌측 입력값을 채운 뒤 초안 생성을 누르면 컷별 자막 카드가 표시됩니다.")
+    cuts = st.session_state.cuts
+
+    if not cuts:
+        st.markdown("""
+        <div class="empty-state">
+          <div class="empty-icon">🎬</div>
+          <div class="empty-text">좌측에 행사 정보를 입력하고<br><b>초안 생성</b>을 눌러주세요</div>
+        </div>""", unsafe_allow_html=True)
     else:
-        for idx, item in enumerate(st.session_state.drafts):
-            with st.container(border=True):
-                top1, top2 = st.columns([3, 2])
-                with top1:
-                    st.markdown(f"### 컷 {item['id']}")
-                with top2:
-                    st.caption("부분 수정 / 부분 재생성 중심")
+        if st.session_state.status != "final":
+            st.session_state.status = "editing"
 
-                caption_key = f"caption_{idx}"
-                desc_key = f"desc_{idx}"
-
-                new_caption = st.text_area(
+        for i, cut in enumerate(cuts):
+            with st.expander(f"✦ 컷 {i+1}  —  {cut['caption']}", expanded=True):
+                new_caption = st.text_input(
                     "자막",
-                    value=item["caption"],
-                    key=caption_key,
-                    height=90,
+                    value=cut["caption"],
+                    key=f"cap_{i}",
+                    label_visibility="collapsed",
                 )
-                new_desc = st.text_area(
+                new_desc = st.text_input(
                     "컷 설명",
-                    value=item["description"],
-                    key=desc_key,
-                    height=80,
+                    value=cut["desc"],
+                    key=f"desc_{i}",
+                    label_visibility="collapsed",
                 )
 
-                if new_caption != item["caption"] or new_desc != item["description"]:
-                    st.session_state.drafts[idx]["caption"] = new_caption
-                    st.session_state.drafts[idx]["description"] = new_desc
-                    st.session_state.status = "editing"
+                # 변경 반영
+                if new_caption != cut["caption"] or new_desc != cut["desc"]:
+                    st.session_state.cuts[i]["caption"] = new_caption
+                    st.session_state.cuts[i]["desc"] = new_desc
 
-                b1, b2, b3, b4, b5 = st.columns(5)
-                with b1:
-                    if st.button("↑ 이동", key=f"up_{idx}", use_container_width=True):
-                        move_cut(idx, -1)
-                        st.rerun()
-                with b2:
-                    if st.button("↓ 이동", key=f"down_{idx}", use_container_width=True):
-                        move_cut(idx, 1)
-                        st.rerun()
-                with b3:
-                    if st.button("재생성", key=f"regen_{idx}", use_container_width=True):
-                        regenerate_single_cut(idx)
-                        st.rerun()
-                with b4:
-                    if st.button("+ 추가", key=f"add_{idx}", use_container_width=True):
-                        add_cut(idx)
-                        st.rerun()
-                with b5:
-                    if st.button("삭제", key=f"del_{idx}", use_container_width=True):
-                        remove_cut(idx)
-                        st.rerun()
+                col_a, col_b, col_c = st.columns(3)
 
-        st.divider()
-        full_text = export_text(st.session_state.drafts)
-        st.session_state.copied_text = full_text
+                # 부분 재생성
+                if col_a.button("🔁 재생성", key=f"regen_{i}", use_container_width=True):
+                    with st.spinner("재생성 중..."):
+                        try:
+                            result = call_ai_single(cut["caption"], cut["desc"], info)
+                            st.session_state.cuts[i]["caption"] = result["caption"]
+                            st.session_state.cuts[i]["desc"] = result["desc"]
+                            st.rerun()
+                        except Exception as e:
+                            st.error(str(e))
 
-        a1, a2, a3, a4 = st.columns(4)
-        with a1:
-            st.download_button(
-                "텍스트 다운로드",
-                data=full_text,
-                file_name="reels_caption_draft.txt",
-                mime="text/plain",
-                use_container_width=True,
-            )
-        with a2:
-            if st.button("전체 복사", use_container_width=True):
-                st.code(full_text, language="text")
-        with a3:
-            if st.button("저장", use_container_width=True):
-                save_current_version()
-                st.success("현재 초안이 저장되었습니다.")
-        with a4:
-            if st.button("최종 확정", use_container_width=True, type="primary"):
-                st.session_state.status = "finalized"
-                st.success("최종 자막안이 확정되었습니다.")
+                # 컷 삭제
+                if col_b.button("🗑️ 삭제", key=f"del_{i}", use_container_width=True):
+                    st.session_state.cuts.pop(i)
+                    st.rerun()
 
-        st.text_area("최종 결과 미리보기", value=full_text, height=220)
+                # 위로 이동
+                if col_c.button("⬆️ 위로", key=f"up_{i}",
+                                 use_container_width=True, disabled=(i == 0)):
+                    cuts[i], cuts[i-1] = cuts[i-1], cuts[i]
+                    st.rerun()
 
-st.divider()
-st.subheader("저장된 결과")
-if st.session_state.saved_versions:
-    for i, version in enumerate(reversed(st.session_state.saved_versions), start=1):
-        with st.expander(f"저장본 {i} · {version['saved_at']}"):
-            st.write(f"상태: {STATUS_LABELS.get(version['status'], version['status'])}")
-            st.json(version["payload"], expanded=False)
-            st.text(export_text(version["drafts"]))
-else:
-    st.caption("저장된 결과가 없습니다.")
+        # 컷 추가
+        st.markdown("---")
+        if st.button("＋ 컷 추가", use_container_width=True):
+            st.session_state.cuts.append({
+                "caption": "새 자막을 입력하세요",
+                "desc": "컷 설명을 입력하세요",
+                "confirmed": False,
+            })
+            st.rerun()
+
+        # 히스토리
+        if st.session_state.history:
+            with st.expander(f"🕓 버전 히스토리 ({len(st.session_state.history)}개)"):
+                for vi, version in enumerate(reversed(st.session_state.history)):
+                    st.markdown(f"**버전 {len(st.session_state.history) - vi}**")
+                    for ci, c in enumerate(version):
+                        st.markdown(f"- 컷{ci+1}: {c['caption']}")
+                    if st.button(f"이 버전으로 되돌리기", key=f"restore_{vi}"):
+                        st.session_state.cuts = deepcopy(version)
+                        st.rerun()
+                    st.markdown("---")
