@@ -15,121 +15,235 @@ st.set_page_config(
 # ── CSS ──────────────────────────────────────────────────────
 st.markdown("""
 <style>
-    /* 전체 배경 */
-    .stApp { background: #0f0f0f; color: #f0f0f0; }
+    @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@600;700;800&display=swap');
 
-    /* 헤더 */
+    /* ── 전체 배경: 따뜻한 오프화이트 ── */
+    .stApp {
+        background: #f5f4f0 !important;
+        color: #1a1a1a !important;
+        font-family: 'Noto Sans KR', sans-serif;
+    }
+    .stApp > header { background: transparent !important; }
+
+    /* Streamlit 기본 배경 오버라이드 */
+    .main .block-container {
+        background: transparent !important;
+        padding-top: 1.5rem !important;
+    }
+
+    /* ── 헤더 ── */
     .header-bar {
-        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
-        border-radius: 12px;
-        padding: 20px 28px;
-        margin-bottom: 24px;
+        background: #ffffff;
+        border-radius: 16px;
+        padding: 22px 28px;
+        margin-bottom: 28px;
         display: flex;
         align-items: center;
         justify-content: space-between;
-        border: 1px solid #ffffff15;
+        border: 1.5px solid #e8e6e0;
+        box-shadow: 0 2px 12px rgba(0,0,0,0.06);
     }
-    .header-title { font-size: 1.4rem; font-weight: 700; color: #fff; margin: 0; }
-    .header-sub { font-size: 0.8rem; color: #aaa; margin-top: 4px; }
+    .header-title {
+        font-family: 'Plus Jakarta Sans', sans-serif;
+        font-size: 1.35rem;
+        font-weight: 800;
+        color: #111;
+        margin: 0;
+        letter-spacing: -0.02em;
+    }
+    .header-sub {
+        font-size: 0.78rem;
+        color: #888;
+        margin-top: 3px;
+        letter-spacing: 0.03em;
+    }
 
-    /* 상태 배지 */
+    /* ── 상태 배지 ── */
     .status-badge {
-        display: inline-block;
-        padding: 5px 14px;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 16px;
         border-radius: 20px;
         font-size: 0.75rem;
-        font-weight: 600;
-    }
-    .status-ready    { background: #2a2a2a; color: #888; border: 1px solid #444; }
-    .status-done     { background: #0d2b1a; color: #4ade80; border: 1px solid #22c55e50; }
-    .status-editing  { background: #1a2040; color: #60a5fa; border: 1px solid #3b82f650; }
-    .status-final    { background: #1a0d2b; color: #c084fc; border: 1px solid #a855f750; }
-
-    /* 섹션 레이블 */
-    .section-label {
-        font-size: 0.7rem;
         font-weight: 700;
-        letter-spacing: 0.1em;
-        color: #888;
-        text-transform: uppercase;
-        margin-bottom: 10px;
+        letter-spacing: 0.02em;
     }
+    .status-ready   { background: #f0f0ee; color: #999; border: 1.5px solid #ddd; }
+    .status-done    { background: #edfaf3; color: #1a9e5c; border: 1.5px solid #a8e6c3; }
+    .status-editing { background: #eef4ff; color: #2563eb; border: 1.5px solid #bfcfff; }
+    .status-final   { background: #fdf0ff; color: #7c3aed; border: 1.5px solid #d8b4fe; }
 
-    /* 컷 카드 */
-    .cut-card {
-        background: #1a1a1a;
-        border: 1px solid #2a2a2a;
-        border-radius: 12px;
-        padding: 16px 18px;
-        margin-bottom: 14px;
-        transition: border-color 0.2s;
-    }
-    .cut-card:hover { border-color: #3b82f6; }
-    .cut-num {
+    /* ── 섹션 레이블 ── */
+    .section-label {
+        font-family: 'Plus Jakarta Sans', sans-serif;
         font-size: 0.68rem;
         font-weight: 700;
-        color: #3b82f6;
-        letter-spacing: 0.08em;
+        letter-spacing: 0.12em;
+        color: #aaa;
         text-transform: uppercase;
-        margin-bottom: 6px;
-    }
-    .cut-caption {
-        font-size: 1.05rem;
-        font-weight: 600;
-        color: #f0f0f0;
-        margin-bottom: 8px;
-        line-height: 1.4;
-    }
-    .cut-desc {
-        font-size: 0.8rem;
-        color: #888;
-        background: #111;
-        border-radius: 6px;
-        padding: 6px 10px;
+        margin-bottom: 12px;
+        margin-top: 4px;
     }
 
-    /* 입력 패널 카드 */
-    .panel-card {
-        background: #141414;
-        border: 1px solid #232323;
-        border-radius: 12px;
-        padding: 20px;
+    /* ── 입력 패널 래퍼 ── */
+    .input-panel {
+        background: #ffffff;
+        border-radius: 14px;
+        padding: 22px 20px;
+        border: 1.5px solid #e8e6e0;
+        box-shadow: 0 1px 6px rgba(0,0,0,0.04);
         margin-bottom: 16px;
     }
 
-    /* 액션 버튼 공통 */
-    .stButton > button {
+    /* ── Streamlit 입력 필드 ── */
+    .stTextInput > div > div > input,
+    .stTextArea > div > div > textarea {
+        background: #fafaf8 !important;
+        border: 1.5px solid #e2e0da !important;
         border-radius: 8px !important;
+        color: #1a1a1a !important;
+        font-family: 'Noto Sans KR', sans-serif !important;
+        font-size: 0.88rem !important;
+    }
+    .stTextInput > div > div > input:focus,
+    .stTextArea > div > div > textarea:focus {
+        border-color: #6366f1 !important;
+        box-shadow: 0 0 0 3px rgba(99,102,241,0.12) !important;
+    }
+    .stTextInput label, .stTextArea label {
+        color: #555 !important;
+        font-size: 0.82rem !important;
         font-weight: 600 !important;
-        font-size: 0.85rem !important;
-        transition: all 0.2s !important;
     }
 
-    /* 구분선 */
-    hr { border-color: #222 !important; }
+    /* selectbox */
+    .stSelectbox > div > div {
+        background: #fafaf8 !important;
+        border: 1.5px solid #e2e0da !important;
+        border-radius: 8px !important;
+        color: #1a1a1a !important;
+    }
+    .stSelectbox label { color: #555 !important; font-size: 0.82rem !important; font-weight: 600 !important; }
 
-    /* selectbox, text_input, text_area 다크 */
-    .stTextInput > div > div > input,
-    .stTextArea > div > div > textarea,
-    .stSelectbox > div > div { background: #1e1e1e !important; color: #f0f0f0 !important; }
+    /* radio */
+    .stRadio label { color: #444 !important; font-size: 0.83rem !important; }
+    .stRadio > div { gap: 6px !important; }
 
-    /* 진행 메시지 */
+    /* ── 버튼 ── */
+    .stButton > button {
+        border-radius: 9px !important;
+        font-weight: 700 !important;
+        font-family: 'Noto Sans KR', sans-serif !important;
+        font-size: 0.84rem !important;
+        transition: all 0.18s !important;
+        border: 1.5px solid transparent !important;
+    }
+    /* primary 버튼 */
+    .stButton > button[kind="primary"] {
+        background: #111 !important;
+        color: #fff !important;
+    }
+    .stButton > button[kind="primary"]:hover {
+        background: #333 !important;
+        transform: translateY(-1px) !important;
+        box-shadow: 0 4px 14px rgba(0,0,0,0.18) !important;
+    }
+    /* secondary 버튼 */
+    .stButton > button[kind="secondary"] {
+        background: #fff !important;
+        color: #333 !important;
+        border-color: #ddd !important;
+    }
+    .stButton > button[kind="secondary"]:hover {
+        border-color: #aaa !important;
+        background: #f5f4f0 !important;
+    }
+
+    /* ── 구분선 ── */
+    hr { border-color: #e8e6e0 !important; margin: 18px 0 !important; }
+
+    /* ── expander (컷 카드) ── */
+    .stExpander {
+        background: #ffffff !important;
+        border: 1.5px solid #e8e6e0 !important;
+        border-radius: 12px !important;
+        margin-bottom: 12px !important;
+        box-shadow: 0 1px 4px rgba(0,0,0,0.04) !important;
+        overflow: hidden !important;
+    }
+    .stExpander:hover {
+        border-color: #6366f1 !important;
+        box-shadow: 0 2px 10px rgba(99,102,241,0.10) !important;
+    }
+    .stExpander summary {
+        font-weight: 600 !important;
+        font-size: 0.9rem !important;
+        color: #222 !important;
+        padding: 14px 18px !important;
+        background: #ffffff !important;
+    }
+    .stExpander > div > div {
+        background: #fafaf8 !important;
+        padding: 14px 18px !important;
+    }
+
+    /* ── 진행 메시지 ── */
     .progress-msg {
-        background: #0d1b2a;
-        border: 1px solid #1e3a5f;
-        border-radius: 8px;
+        background: #eef4ff;
+        border: 1.5px solid #c3d4ff;
+        border-radius: 10px;
         padding: 14px 18px;
-        color: #60a5fa;
-        font-size: 0.9rem;
+        color: #2563eb;
+        font-size: 0.88rem;
+        font-weight: 600;
         margin: 12px 0;
     }
+
+    /* ── 빈 상태 ── */
     .empty-state {
         text-align: center;
-        padding: 60px 20px;
-        color: #444;
+        padding: 70px 20px;
+        color: #bbb;
+        background: #fff;
+        border-radius: 14px;
+        border: 1.5px dashed #ddd;
     }
-    .empty-icon { font-size: 3rem; margin-bottom: 12px; }
-    .empty-text { font-size: 0.9rem; }
+    .empty-icon { font-size: 2.8rem; margin-bottom: 14px; }
+    .empty-text { font-size: 0.88rem; line-height: 1.7; color: #aaa; }
+
+    /* ── success/warning/error 메시지 ── */
+    .stAlert { border-radius: 10px !important; font-size: 0.86rem !important; }
+
+    /* ── download button ── */
+    .stDownloadButton > button {
+        background: #fff !important;
+        color: #333 !important;
+        border: 1.5px solid #ddd !important;
+        border-radius: 9px !important;
+        font-weight: 600 !important;
+        font-size: 0.84rem !important;
+    }
+    .stDownloadButton > button:hover {
+        border-color: #6366f1 !important;
+        color: #6366f1 !important;
+        background: #eef4ff !important;
+    }
+
+    /* ── 코드 블록 ── */
+    .stCodeBlock { border-radius: 10px !important; }
+
+    /* 히스토리 뱃지 */
+    .history-ver {
+        display: inline-block;
+        background: #f0f0ee;
+        color: #666;
+        border-radius: 6px;
+        padding: 2px 8px;
+        font-size: 0.75rem;
+        font-weight: 700;
+        margin-bottom: 6px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
